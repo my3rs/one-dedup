@@ -5,10 +5,8 @@
 #include "rabin.h"
 
 
-/* 设备大小，如果是物理设备将忽略这个值 */
 #define SIZE ( 8ull * 1024ull * 1024ull * 1024ull)
 #define HASH_LOG_BLOCK_SIZE ( 4 * 1024 )
-//#define BLOCK_MIN_SIZE 512  // TODO delete it
 #define PHY_BLOCK_MAX_SIZE MIN_BLOCK_SIZE       // rabin
 #define PHY_BLOCK_MIN_SIZE MIN_BLOCK_SIZE       // rabin
 /* Virtual block size should be the EXpectations of the cdc block */
@@ -22,8 +20,6 @@
 #define NVIRT_BLOCKS (2 * NPHYS_BLOCKS)
 
 /* Main on-disk data structures: block map, hash index, and hash log. */
-//#define BLOCK_MAP_SIZE (NVIRT_BLOCKS * FINGERPRINT_SIZE)    // TODO delete it
-//#define ENTRIES_PER_BUCKET 8
 #define ENTRIES_PER_BUCKET 16
 #define NBUCKETS NVIRT_BLOCKS
 #define HASH_INDEX_SIZE \

@@ -121,7 +121,7 @@ typedef struct free_block {
 struct bplus_tree {
     char *caches;
     int used[MIN_CACHE_NUM];
-    char filename[1024];    // TODO delete it
+    char filename[1024];
     int fd;
     int level;
     off_t root;
