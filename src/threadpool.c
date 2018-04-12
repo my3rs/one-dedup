@@ -91,7 +91,7 @@ threadpool_t *threadpool_create(int thread_count, int queue_size, int flags)
     threadpool_t *pool;
     int i;
 
-    /* TODO: 判断负数或太大的数 */
+    /* TODO: we should check if the value is too large or negative */
     do {
         if ((pool = (threadpool_t *) malloc(sizeof(threadpool_t))) == NULL) {
 //            goto err;

@@ -27,11 +27,6 @@
 #define HASH_LOG_SIZE (NPHYS_BLOCKS * sizeof(struct hash_log_entry))
 
 
-/* 可用的数据区域大小 */
-#define DATA_SIZE_BTREE \
-    (SIZE - HASH_INDEX_SIZE - HASH_LOG_SIZE - sizeof(struct data_log_free_list_node))
-
-
 /** Space Mapping Mode:
  * Space is an array of fingerprint which refers to a fixed range of nbd's field offset */
 // space range: max block size
@@ -65,16 +60,6 @@ struct hash_index_entry {
     uint64_t hash_log_address;
 };
 
-
-
-
-//struct hash_log_entry {
-//    char fingerprint[FINGERPRINT_SIZE];
-//    uint32_t ref_count;
-//    uint64_t pbn;
-//};
-
-/* 每个数据块对应一个指纹项 */
 struct hash_log_entry {
     char        fingerprint[FINGERPRINT_SIZE];
     uint32_t    ref_count;
@@ -90,9 +75,6 @@ struct block_map_entry {
     char        fingerprit[FINGERPRINT_SIZE];
 } block_map_entry;
 
-
-
-/* 向屏幕打印时的字体 */
 #define BOLD                 "\e[1m"
 #define NONE                 "\e[0m"
 
