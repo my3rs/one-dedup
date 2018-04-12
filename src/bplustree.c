@@ -1008,10 +1008,10 @@ value_t bplus_tree_get_fuzzy(struct bplus_tree *tree, key_t key)
     // we should return a empty value whose fingerprint is zeros.
     memset(start->fingerprit, 0, sizeof(start->fingerprit));
 
-    key_t min = key - MAX_BLOCK_SIZE;
+    key_t min = key - MAX_BLOCK_SIZE - 1;
     if (min < 0)
         min = 0;
-    key_t max = min + MAX_BLOCK_SIZE;
+    key_t max = key + MAX_BLOCK_SIZE;
 
     struct bplus_node *node = node_seek(tree, tree->root);
     while (node != NULL) {
@@ -1026,7 +1026,7 @@ value_t bplus_tree_get_fuzzy(struct bplus_tree *tree, key_t key)
             while (node != NULL && key(node)[i] <= max) {
                 *start = data(node)[i];
 
-                if (start->start <= key && start->length + start->start > key)
+                if ((key >= start->start) && (key < start->length + start->start))
                     return *start;
 
                 if (++i >= node->children) {
@@ -1045,6 +1045,7 @@ value_t bplus_tree_get_fuzzy(struct bplus_tree *tree, key_t key)
         }
     }
 
+    memset(start, 0, sizeof(value_t));
     return *start;
 }
 

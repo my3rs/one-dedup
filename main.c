@@ -46,6 +46,8 @@ struct g_args_t {
     bool cmd_debug;
     bool rabin_debug;
     bool hash_debug;
+    bool read_debug;
+    bool write_debug;
 };
 
 struct g_args_t g_args;
@@ -126,7 +128,7 @@ static int seek_to_data_log(int _fd, uint64_t offset)
     return 0;
 }
 
-static void sha1_fp_to_str(char *dest, unsigned char *src)
+static void fingerprint_to_str(char *dest, unsigned char *src)
 {
     for (int i=0; i<SHA_DIGEST_LENGTH; i++)
         sprintf(&dest[i*2], "%02x", (unsigned int)src[i]);
@@ -396,13 +398,11 @@ static struct hash_log_entry lookup_fingerprint(char *fingerprint)
 
 
 
-    // todo: Optimize prefetch rules
     // ==========================================
     //               update cache
     // ==========================================
     /* Now let's look up everything in the 4K block containing the hash log
      * entry we want. This way we can cache it all for later. */
-    // fixme
     hash_log_address -= hash_log_address % HASH_LOG_BLOCK_SIZE;
     seek_to_hash_log(fd, hash_log_address);
     struct hash_log_entry h;
@@ -424,7 +424,7 @@ static struct hash_log_entry lookup_fingerprint(char *fingerprint)
         seek_to_hash_log(fd, hash_log_address);
         struct hash_log_entry h_tmp;
         err = read(g_args.hash_table_fd, &h_tmp, sizeof(struct hash_log_entry));
-        fprintf(stderr, "hash log entry: %02x\nfingerprint: %02x\n", h_tmp.fingerprint, fingerprint);
+//        fprintf(stderr, "hash log entry: %02x\nfingerprint: %02x\n", h_tmp.fingerprint, fingerprint);
     }
 
     return cache[index];
@@ -514,7 +514,8 @@ static int write_one_block_btree(void *buf, uint32_t block_size, uint64_t offset
         /* Write data block */
         seek_to_data_log(fd, hl_entry.data_log_offset);
         err = write(fd, buf, block_size);
-        printf("[WRITE NEW BLOCK] | size: %d, offset %lu\n", block_size, hl_entry.data_log_offset);
+        if (g_args.write_debug)
+            printf("[WRITE NEW BLOCK] | size: %d, offset %lu\n", block_size, hl_entry.data_log_offset);
         assert(err == (int)block_size);
     } else {
         /* This block has already been stored. We just need to increase the
@@ -525,7 +526,8 @@ static int write_one_block_btree(void *buf, uint32_t block_size, uint64_t offset
         hl_entry.ref_count += 1;
         seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
         err = write(g_args.hash_table_fd, &hl_entry, sizeof(struct hash_log_entry));
-        printf("[WRITE OLD BLOCK]\n");
+        if (g_args.write_debug)
+            printf("[WRITE OLD BLOCK]\n");
         assert(err == sizeof(struct hash_log_entry));
     }
 
@@ -626,8 +628,12 @@ static int read_one_block_btree(void *buf, uint32_t len, uint64_t offset)
     return 0;
 }
 
+
 static int dedup_read(void *buf, uint32_t len, uint64_t offset)
 {
+    if (g_args.read_debug)
+        fprintf(stderr, "[HANDLE READ REQUEST] | len: %u offset: %lu\n", len, offset);
+
     char *bufi = buf;
     struct block_map_entry bmap_entry;
 
@@ -641,6 +647,12 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
         }
         uint32_t read_size = bmap_entry.length - (offset - bmap_entry.start);
         assert(read_size >= 0);
+
+        if (g_args.read_debug) {
+            printf("[DEDUP READ 1] | bmap start: %lu bmap end: %lu\n",
+                   bmap_entry.start, bmap_entry.start + bmap_entry.length);
+            printf("[DEDUP READ 2] | len: %u offset: %lu\n", read_size, offset);
+        }
         read_one_block_btree(bufi, read_size, offset);
         bufi += read_size;
         len -= read_size;
@@ -658,11 +670,13 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
             memset(bufi, 0, len);
             return 0;
         }
-
+        if (g_args.read_debug) {
+            printf("[DEDUP READ] | len: %u offset: %lu\n", read_size, offset);
+        }
         read_one_block_btree(bufi, read_size, offset);
         bufi += read_size;
-        len -= read_size;   // fixme: len never equals to 0
-        offset += read_size; // fixme: initial read size = 0
+        len -= read_size;
+        offset += read_size;
     }
     /* Now we get to the last block, it may be not a complete block*/
     if (len != 0) {
@@ -913,9 +927,11 @@ static void hash_debug()
 static void debug_settings()
 {
     // DEBUG settings
-    g_args.cmd_debug = 0;
-    g_args.rabin_debug = 1;
-    g_args.hash_debug = 0;
+    g_args.cmd_debug = false;
+    g_args.rabin_debug = false;
+    g_args.hash_debug = false;
+    g_args.read_debug = true;
+    g_args.write_debug = false;
 }
 
 /**
