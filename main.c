@@ -608,26 +608,26 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
 static int read_one_block_btree(void *buf, uint32_t len, uint64_t offset)
 {
     int err;
-    char fingerprint[FINGERPRINT_SIZE];
-    struct block_map_entry bmap_entry;
-    bmap_entry = bplus_tree_get_fuzzy(g_args.tree, offset);
-    memcpy(fingerprint, bmap_entry.fingerprit, sizeof(fingerprint));
 
-    if (fingerprint_is_zero(fingerprint)){
-        // In this case we did't find the expected block
-        memset(buf, 0, len);
-        return 0;
-    }
 
-    struct hash_log_entry hlog_entry;
-    hlog_entry = lookup_fingerprint(fingerprint);
-
-    seek_to_data_log(fd, hlog_entry.data_log_offset);
+    seek_to_data_log(fd, offset);
     err = read(fd, buf, len);
     assert(err == len);
     return 0;
 }
 
+
+/**
+ *
+ * @param buf
+ * @param len
+ * @param offset : offset in data log
+ * @return
+ */
+static int read_chunk(void *buf, uint32_t len, uint64_t offset)
+{
+
+}
 
 static int dedup_read(void *buf, uint32_t len, uint64_t offset)
 {
@@ -636,6 +636,7 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
 
     char *bufi = buf;
     struct block_map_entry bmap_entry;
+    struct hash_log_entry tmp_entry;
 
     bmap_entry = bplus_tree_get_fuzzy(g_args.tree, offset);
 
@@ -648,35 +649,44 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
         uint32_t read_size = bmap_entry.length - (offset - bmap_entry.start);
         assert(read_size >= 0);
 
+
+        tmp_entry = lookup_fingerprint(bmap_entry.fingerprit);
+
+
         if (g_args.read_debug) {
             printf("[DEDUP READ 1] | bmap start: %lu bmap end: %lu\n",
                    bmap_entry.start, bmap_entry.start + bmap_entry.length);
-            printf("[DEDUP READ 2] | len: %u offset: %lu\n", read_size, offset);
+//            printf("[DEDUP READ 2] | len: %u offset: %lu\n", read_size, offset);
         }
-        read_one_block_btree(bufi, read_size, offset);
+        read_one_block_btree(bufi, read_size, tmp_entry.data_log_offset);
         bufi += read_size;
         len -= read_size;
         offset += read_size;
     }
 
-    while (len >= 0 ) {
+    while (len > 0 ) {
         bmap_entry = bplus_tree_get_fuzzy(g_args.tree, offset);
         if (len < bmap_entry.length)
             break;
-        /* We read a complete block */
-        uint32_t  read_size = bmap_entry.length;
-
-        if (read_size == 0) {
+        if (fingerprint_is_zero(bmap_entry.fingerprit)) {
+            memset(bufi, 0, len);
+            len = 0;
+            continue;
+        }
+        if (bmap_entry.length == 0) {
+            printf("error!\n");
             memset(bufi, 0, len);
             return 0;
         }
+        // We read a complete block
         if (g_args.read_debug) {
-            printf("[DEDUP READ] | len: %u offset: %lu\n", read_size, offset);
+            printf("[DEDUP READ] | len: %u offset: %lu\n", bmap_entry.length, offset);
         }
-        read_one_block_btree(bufi, read_size, offset);
-        bufi += read_size;
-        len -= read_size;
-        offset += read_size;
+        tmp_entry = lookup_fingerprint(bmap_entry.fingerprit);
+        read_one_block_btree(bufi, bmap_entry.length, tmp_entry.data_log_offset);
+        bufi += bmap_entry.length;
+        len -= bmap_entry.length;
+        offset += bmap_entry.length;
     }
     /* Now we get to the last block, it may be not a complete block*/
     if (len != 0) {
