@@ -1,5 +1,10 @@
-#define _GNU_SOURCE         // for O_DIRECT
-#define _LARGEFILE64_SOURCE // for lseek64
+#define _GNU_SOURCE
+#define _LARGEFILE_SOURCE
+#define _LARGEFILE64_SOURCE
+#define _FILE_OFFSET_BITS 64
+
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <assert.h>
 #include <errno.h>
@@ -35,11 +40,12 @@
 struct g_args_t {
     char *hash_table_filename;
     int hash_table_fd;
+    char *bplustree_filename;
+
     int fd;
     char *nbd_device_name;
     char *phy_device_name;
     int run_mode;
-    int map_mode;
     zlog_category_t* write_block_category;
     struct bplus_tree *tree;
     struct data_log_free_list_node data_log_free_list;
@@ -61,8 +67,6 @@ static uint64_t data_log_free_offset;
 enum mode{
     INIT_MODE = 0,
     RUN_MODE  = 1,
-    BTREE_MODE = 2,
-    SPACE_MODE = 3,
 };
 
 
@@ -71,19 +75,28 @@ enum mode{
 //               Tool Functions: Seek
 // ===================================================
 
+#define SEEK_TO_BUCKET(fd, i) \
+    do { \
+        lseek64((fd), (i)*sizeof(hash_bucket), SEEK_SET); \
+    } while(0)
+
+#define SEEK_TO_HASH_LOG(fd, i) \
+    do { \
+        lseek64((fd), HASH_INDEX_SIZE + (i) * sizeof(struct hash_log_entry), SEEK_SET); \
+    } while (0)
+
+
+#define SEEK_TO_DATA_LOG(fd, offset) \
+    do { \
+        lseek64((fd), (offset), SEEK_SET); \
+    } while(0)
+
 static int seek_to_bucket(int _fd, int  i)
 {
     int err;
-
     if (g_args.hash_debug)
         printf("[SEEK TO BUCKET] | num: %d, offset %lu\n", i, i* sizeof(hash_bucket));
-
-    if (g_args.map_mode == BTREE_MODE)
-
-        err =  lseek64(_fd, i* sizeof(hash_bucket), SEEK_SET);
-    else
-        err = lseek64(_fd, SPACE_SIZE + (i)*sizeof(hash_bucket), SEEK_SET);
-
+    err =  lseek64(_fd, i* sizeof(hash_bucket), SEEK_SET);
     assert(err != -1);
 
     return 0;
@@ -91,18 +104,8 @@ static int seek_to_bucket(int _fd, int  i)
 
 static int seek_to_hash_log(int _fd, uint64_t i)
 {
-
-    switch (g_args.map_mode) {
-        case BTREE_MODE:
-            lseek64(_fd, HASH_INDEX_SIZE + i* sizeof(struct hash_log_entry), SEEK_SET);
-            return 0;
-        case SPACE_MODE:
-            lseek64(_fd, SPACE_SIZE + HASH_INDEX_SIZE + i* sizeof(struct hash_log_entry),
-                    SEEK_SET);
-            return 0;
-    }
-
-    return ERROR_INVALID_OFFSET;
+    lseek64(_fd, HASH_INDEX_SIZE + i* sizeof(struct hash_log_entry), SEEK_SET);
+    return 0;
 }
 
 
@@ -111,7 +114,6 @@ static int seek_to_data_log_free_list(int _fd)
     int err;
     err = lseek64(_fd, 0, SEEK_SET);
     assert(err != -1);
-
     return 0;
 }
 
@@ -147,8 +149,8 @@ static void usage()
     fprintf(stderr, BOLD"    -i, --init\n" NONE "\tspecify the nbd device and init\n\n");
     fprintf(stderr, BOLD"    -a, --hash-file\n" NONE "\tspecify the hash file\n\n");
     fprintf(stderr, BOLD"    -p, --physical-device\n" NONE "\tspecify the physical device or file\n\n");
-    fprintf(stderr, BOLD"    -s, --space\n" NONE "\tspace mapping\n\n");
-    fprintf(stderr, BOLD"    -b, --btree\n" NONE "\tb+tree mapping\n\n");
+    fprintf(stderr, BOLD"    -s, --space\n" NONE "\tspace mapping and specify space db file\n\n");
+    fprintf(stderr, BOLD"    -b, --btree\n" NONE "\tb+tree mapping mode and specify b+tree db file\n\n");
 }
 
 static void print_debug_info()
@@ -187,7 +189,7 @@ static int hash_index_get_bucket(char *hash, hash_bucket *bucket)
 
 //    printf("hash_tail: %u,NBUCKETS: %llu, index: %d\n", *hash_tail, NBUCKETS, bucket_index);
 
-    seek_to_bucket(g_args.hash_table_fd, bucket_index);
+    SEEK_TO_BUCKET(g_args.hash_table_fd, bucket_index);
     int err = read(g_args.hash_table_fd, bucket,
             sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
     assert(err == sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
@@ -200,7 +202,7 @@ static int hash_index_put_bucket(char *hash, hash_bucket *bucket)
     /* We don't need to look at the entire hash, just the last few bytes. */
     int32_t *hash_tail = (int32_t *)(hash + FINGERPRINT_SIZE - sizeof(int32_t));
     int bucket_index = *hash_tail % NBUCKETS;
-    seek_to_bucket(g_args.hash_table_fd, bucket_index);
+    SEEK_TO_BUCKET(g_args.hash_table_fd, bucket_index);
     int err = write(g_args.hash_table_fd, bucket,
             sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
     assert(err == sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
@@ -271,7 +273,7 @@ static int hash_index_remove(char *hash)
 static uint64_t hash_log_new()
 {
     uint64_t new_block = hash_log_free_list;
-    seek_to_hash_log(g_args.hash_table_fd, new_block);
+    SEEK_TO_HASH_LOG(g_args.hash_table_fd, new_block);
     int err = read(g_args.hash_table_fd, &hash_log_free_list, sizeof(uint64_t));
     assert(err == sizeof(uint64_t));
 
@@ -285,7 +287,7 @@ static uint64_t hash_log_new()
  */
 static int hash_log_free(uint64_t hash_log_address)
 {
-    seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
+    SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
     int err = write(g_args.hash_table_fd, &hash_log_free_list, sizeof(uint64_t));
     assert(err == sizeof(uint64_t));
     hash_log_free_list = hash_log_address;
@@ -404,7 +406,7 @@ static struct hash_log_entry lookup_fingerprint(char *fingerprint)
     /* Now let's look up everything in the 4K block containing the hash log
      * entry we want. This way we can cache it all for later. */
     hash_log_address -= hash_log_address % HASH_LOG_BLOCK_SIZE;
-    seek_to_hash_log(fd, hash_log_address);
+    SEEK_TO_HASH_LOG(fd, hash_log_address);
     struct hash_log_entry h;
 
     for (unsigned i = 0; i < HASH_LOG_BLOCK_SIZE/sizeof(struct hash_log_entry); i++) {
@@ -421,7 +423,7 @@ static struct hash_log_entry lookup_fingerprint(char *fingerprint)
     err = memcmp(fingerprint, cache[index].fingerprint, FINGERPRINT_SIZE);
     if (err != 0) {
         hash_log_address = hash_index_lookup(fingerprint);
-        seek_to_hash_log(fd, hash_log_address);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
         struct hash_log_entry h_tmp;
         err = read(g_args.hash_table_fd, &h_tmp, sizeof(struct hash_log_entry));
 //        fprintf(stderr, "hash log entry: %02x\nfingerprint: %02x\n", h_tmp.fingerprint, fingerprint);
@@ -438,13 +440,13 @@ static int decrement_refcount(char *fingerprint)
     // todo: decrement_refcount
     struct hash_log_entry hle;
     uint64_t hash_log_address = hash_index_lookup(fingerprint);
-    seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
+    SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
     int err = read(g_args.hash_table_fd, &hle, sizeof(struct hash_log_entry));
     assert(err == sizeof(struct hash_log_entry));
 
     if (hle.ref_count > 1) {
         hle.ref_count--;
-        seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
         err = write(g_args.hash_table_fd, &hle, sizeof(struct hash_log_entry));
     } else {
         /* The ref_count is now zero, so we need to do some garbage collection
@@ -458,16 +460,12 @@ static int decrement_refcount(char *fingerprint)
 }
 
 // offset: nbd
-static int write_one_block_btree(void *buf, uint32_t block_size, uint64_t offset)
+static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset)
 {
+    char log_line[1024*1024];
 
-    if (block_size == 0) {
-        printf("tried to write a empty block!\n");
-        return 0;
-    }
+    assert(block_size > 0);
 
-
-    char log_line[LOG_LINE_MAX_SIZE];
     int err;
     char fingerprint[FINGERPRINT_SIZE];
     struct block_map_entry bm_entry;
@@ -494,37 +492,41 @@ static int write_one_block_btree(void *buf, uint32_t block_size, uint64_t offset
     hash_log_address = hash_index_lookup(fingerprint);
     if (hash_log_address == (uint64_t) -1) {
         /* This block is new. */
+        sprintf(log_line, "[NEW] | len: %u, offset: %lu", block_size, offset);
+        printf("%s\n", log_line);
+        zlog_info(g_args.write_block_category, log_line);
+
         memcpy(&(hl_entry.fingerprint), fingerprint, FINGERPRINT_SIZE);
-
-
-
         hl_entry.data_log_offset = physical_block_new(block_size);
-
-
-
         hl_entry.ref_count = 1;
         hl_entry.block_size = block_size;
+
         hash_log_address = hash_log_new();
         /* Update hash index */
         hash_index_insert(fingerprint, hash_log_address);
         /* Update hash log */
-        seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
         err = write(g_args.hash_table_fd, &hl_entry, sizeof(struct hash_log_entry));
         assert(err == sizeof(struct hash_log_entry));
+
+        // fixme: deleted real write operation
         /* Write data block */
-        seek_to_data_log(fd, hl_entry.data_log_offset);
-        err = write(fd, buf, block_size);
+//        seek_to_data_log(fd, hl_entry.data_log_offset);
+//        err = write(fd, buf, block_size);
         if (g_args.write_debug)
             printf("[WRITE NEW BLOCK] | size: %d, offset %lu\n", block_size, hl_entry.data_log_offset);
         assert(err == (int)block_size);
     } else {
         /* This block has already been stored. We just need to increase the
          * refcount. */
-        seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
+        sprintf(log_line, "[REDUNDANT] | len: %u, offset: %lu", block_size, offset);
+        printf("%s\n", log_line);
+        zlog_info(g_args.write_block_category, log_line);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
         err = read(g_args.hash_table_fd, &hl_entry, sizeof(struct hash_log_entry));
         assert(err == sizeof(struct hash_log_entry));
         hl_entry.ref_count += 1;
-        seek_to_hash_log(g_args.hash_table_fd, hash_log_address);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
         err = write(g_args.hash_table_fd, &hl_entry, sizeof(struct hash_log_entry));
         if (g_args.write_debug)
             printf("[WRITE OLD BLOCK]\n");
@@ -537,16 +539,11 @@ static int write_one_block_btree(void *buf, uint32_t block_size, uint64_t offset
 static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
 {
     int err;
-    int length = len;
-    size_t bytes = 0;
-    unsigned int chunks = 0;
-    struct rabin_t *hash;
-    hash = rabin_init();
+    struct rabin_t *hash = rabin_init();
     uint8_t *ptr = buf;
-    bytes += len;
 
     if (len < MIN_BLOCK_SIZE) {
-        err = write_one_block_btree(buf, len, offset);
+        err = write_one_block(buf, len, offset);
         assert(err == 0);
         return 0;
     }
@@ -563,74 +560,43 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
 
         /* Print rabin debug information */
         if(g_args.rabin_debug)
-            printf("[RABIN] start: %lu, len: %lu fingerprint: %016llx\n",
+            printf("[RABIN] start: %lu, len: %u fingerprint: %016llx\n",
                    last_chunk.start, last_chunk.length, (long long unsigned int)last_chunk.cut_fingerprint);
 
-        chunks++;
-
         /* Write a block */
-
-        assert(last_chunk.start >= 0);
-        assert(last_chunk.length <= length);
-
-        if (last_chunk.start >= 10000000) {
-            printf("bigger\n");
-        }
-
-        err = write_one_block_btree(buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
+        assert(last_chunk.start < 10000000);
+        err = write_one_block(buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
         assert(err == 0);
     }
 
     if (rabin_finalize(hash) != NULL) {
-        chunks++;
-        if (g_args.rabin_debug)
-            printf("[LAST] | %d %016llx\n",
+//        if (g_args.rabin_debug)
+            printf("[LAST] | %u %016llx\n",
                    last_chunk.length,
                    (long long unsigned int)last_chunk.cut_fingerprint);
-        err = write_one_block_btree(buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
+        err = write_one_block(buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
         assert(err == 0);
     }
-
-
-
-    if (g_args.rabin_debug) {
-        unsigned int avg = 0;
-        if (chunks > 0)
-            avg = bytes / chunks;
-        fprintf(stderr, "[RABIN]%d chunks, average chunk size %d\n", chunks, avg);
-    }
-
     return 0;
 }
 
 
 
-static int read_one_block_btree(void *buf, uint32_t len, uint64_t offset)
+static int read_one_block(void *buf, uint32_t len, uint64_t offset)
 {
     int err;
-
-
     seek_to_data_log(fd, offset);
     err = read(fd, buf, len);
     assert(err == len);
     return 0;
 }
 
-
-/**
- *
- * @param buf
- * @param len
- * @param offset : offset in data log
- * @return
- */
-static int read_chunk(void *buf, uint32_t len, uint64_t offset)
-{
-
-}
-
 static int dedup_read(void *buf, uint32_t len, uint64_t offset)
 {
+    // fixme
+    memset(buf, 0, len);
+    return 0;
+
     if (g_args.read_debug)
         fprintf(stderr, "[HANDLE READ REQUEST] | len: %u offset: %lu\n", len, offset);
 
@@ -658,7 +624,7 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
                    bmap_entry.start, bmap_entry.start + bmap_entry.length);
 //            printf("[DEDUP READ 2] | len: %u offset: %lu\n", read_size, offset);
         }
-        read_one_block_btree(bufi, read_size, tmp_entry.data_log_offset);
+        read_one_block(bufi, read_size, tmp_entry.data_log_offset);
         bufi += read_size;
         len -= read_size;
         offset += read_size;
@@ -673,6 +639,7 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
             len = 0;
             continue;
         }
+        assert(bmap_entry.length != 0);
         if (bmap_entry.length == 0) {
             printf("error!\n");
             memset(bufi, 0, len);
@@ -683,14 +650,14 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
             printf("[DEDUP READ] | len: %u offset: %lu\n", bmap_entry.length, offset);
         }
         tmp_entry = lookup_fingerprint(bmap_entry.fingerprit);
-        read_one_block_btree(bufi, bmap_entry.length, tmp_entry.data_log_offset);
+        read_one_block(bufi, bmap_entry.length, tmp_entry.data_log_offset);
         bufi += bmap_entry.length;
         len -= bmap_entry.length;
         offset += bmap_entry.length;
     }
     /* Now we get to the last block, it may be not a complete block*/
     if (len != 0) {
-        read_one_block_btree(bufi, len, offset);
+        read_one_block(bufi, len, offset);
     }
 
     return 0;
@@ -706,7 +673,7 @@ static int dedup_disc()
     int err;
 
     fprintf(stderr, "Just received a disconnect request.\n");
-    seek_to_hash_log(g_args.hash_table_fd, 0);
+    SEEK_TO_HASH_LOG(g_args.hash_table_fd, 0);
     err = write(g_args.hash_table_fd, &hash_log_free_list, sizeof(uint64_t));
     assert(err == sizeof(uint64_t));
 
@@ -734,35 +701,15 @@ static int dedup_trim(uint64_t from, uint32_t len)
 }
 
 
-
-
-/**
- * Init in SPACE mode.
- */
-static int init_space_mode()
-{
-    // todo: init space mode
-    /* We mmap a bunch of zeros into memory. This way we can write it directly
-         * into the file to zero out the block map and hash index. 写时拷贝|匿名映射 */
-//    zeros = mmap(NULL, BLOCK_MAP_SIZE + HASH_INDEX_SIZE, PROT_READ,
-//                 MAP_PRIVATE | MAP_ANONYMOUS, fd, 0);
-}
-
 /**
  * Init in B+TREE mode.
  */
-static int init_btree_mode()
+static int init()
 {
     uint64_t i;
     int err;
 
-
-
-
     err = write(g_args.hash_table_fd, zeros, HASH_INDEX_SIZE);
-//    zeros = malloc(NBUCKETS * sizeof(struct hash_index_entry)*ENTRIES_PER_BUCKET);
-//    memset(zeros, 0, NBUCKETS * sizeof(struct hash_index_entry)*ENTRIES_PER_BUCKET);
-//    err = write(g_args.hash_table_fd, zeros, NBUCKETS * sizeof(struct hash_index_entry)*ENTRIES_PER_BUCKET);
     assert(err == HASH_INDEX_SIZE);
 
     printf("init %llu buckets\n", NBUCKETS);
@@ -772,13 +719,10 @@ static int init_btree_mode()
      * in memory and then write it out in larger blocks. But the Linux buffer
      * cache will probably take care of that anyway for now. */
     for (i = 1; i <= NPHYS_BLOCKS; i++) {
-        seek_to_hash_log(g_args.hash_table_fd, i - 1);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, i - 1);
         err = write(g_args.hash_table_fd, &i, sizeof(uint64_t));
         assert(err == sizeof(uint64_t));
     }
-
-
-
 
     /* We use a list to manage free data log */
 //    g_args.data_log_free_list.offset = sizeof(struct data_log_free_list_node);
@@ -794,13 +738,6 @@ static int init_btree_mode()
     return 0;
 }
 
-static int init()
-{
-    if (g_args.map_mode == BTREE_MODE)
-        init_btree_mode();
-    else
-        init_space_mode();
-}
 
 /**
  * @brief : Open a device file or a regular file specified by -p
@@ -814,8 +751,7 @@ int open_phy_device(char *filename)
         fd = open(filename, O_RDWR|O_DIRECT|O_LARGEFILE);
     } else {
         /* FIXME: we should only handle physical device or regular file(not created) */
-//        fprintf(stderr, "Specified a regular file!\n");
-        fd = open(filename, O_RDWR|O_CREAT|O_LARGEFILE);
+        fd = open64(filename, O_RDWR|O_CREAT|O_LARGEFILE);
     }
     assert(fd != -1);
 
@@ -823,7 +759,7 @@ int open_phy_device(char *filename)
     return 0;
 }
 
-int open_hash_file(char *filename)
+void static open_hash_file(char *filename)
 {
     g_args.hash_table_fd = open(filename, O_RDWR | O_CREAT);
     assert(g_args.hash_table_fd != -1);
@@ -841,17 +777,22 @@ void parse_command_line(int argc, char *argv[])
             {"nbd", required_argument, NULL, 'n'},
             {"physical-device", required_argument, NULL, 'p'},
             {"hash-file", required_argument, NULL, 'a'},
-
             {"help", no_argument, NULL, 'h'},
-            {"space", no_argument, NULL, 's'},
-            {"btree", no_argument, NULL, 's'},
+            {"space", required_argument, NULL, 's'},
+            {"btree", required_argument, NULL, 'b'},
             {NULL, 0, NULL, NULL},
     };
 
-    if (argc <= 5) {
-        usage();
-        exit(-1);
-    }
+//    if (argc <= 5) {
+//        usage();
+//        exit(-1);
+//    }
+
+    // default opts
+    g_args.hash_table_filename = "./hash.db";
+    g_args.phy_device_name = "./image";
+    g_args.nbd_device_name = "/dev/nbd0";
+    g_args.bplustree_filename = "./bptree.db";
 
     int opt = getopt_long(argc, argv, opt_string, long_opts, NULL);
     while( opt != -1 ) {
@@ -870,11 +811,8 @@ void parse_command_line(int argc, char *argv[])
             case 'p':   // image file
                 g_args.phy_device_name = optarg;
                 break;
-            case 's':   // space mode
-                g_args.map_mode = SPACE_MODE;
-                break;
             case 'b':   // b+tree mode
-                g_args.map_mode = BTREE_MODE;
+                g_args.bplustree_filename = optarg;
                 break;
             case 'h':   // help
             default:
@@ -890,6 +828,7 @@ void parse_command_line(int argc, char *argv[])
  */
 static void print_cmd_args()
 {
+    printf("========== cmd opts ==============\n");
     printf("nbd device: %s\n", g_args.nbd_device_name);
     printf("physical device: %s\n", g_args.phy_device_name);
     switch (g_args.run_mode) {
@@ -904,21 +843,10 @@ static void print_cmd_args()
             break;
     }
 
-    switch (g_args.map_mode) {
-        case SPACE_MODE:
-            printf("mapping mode: space\n");
-            break;
-        case BTREE_MODE:
-            printf("mapping mode: b+tree\n");
-            break;
-        default:
-            printf("mapping mode: invalid\n");
-            break;
-    }
-
     printf("data free list offset: %lu\n", g_args.data_log_free_list.offset);
     printf("data free list size: %lu\n", g_args.data_log_free_list.size);
     printf("data free list next: %lu\n", g_args.data_log_free_list.next);
+    printf("======================================");
 }
 
 
@@ -937,10 +865,10 @@ static void hash_debug()
 static void debug_settings()
 {
     // DEBUG settings
-    g_args.cmd_debug = false;
+    g_args.cmd_debug = true;
     g_args.rabin_debug = false;
     g_args.hash_debug = false;
-    g_args.read_debug = true;
+    g_args.read_debug = false;
     g_args.write_debug = false;
 }
 
@@ -954,17 +882,17 @@ int main(int argc, char *argv[])
     debug_settings();
     /* First, we parse the cmd line */
     parse_command_line(argc, argv);
+
+    g_args.tree = bplus_tree_init(g_args.bplustree_filename, 16777216*16);
     open_hash_file(g_args.hash_table_filename);
     open_phy_device(g_args.phy_device_name);
 
-    g_args.tree = bplus_tree_init("./bpt.data", 65536);
+    if (g_args.cmd_debug)
+        print_cmd_args();
 
 
     /* Init zeros */
-    if (g_args.map_mode == BTREE_MODE)
-        zeros = mmap(NULL, HASH_INDEX_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, g_args.hash_table_fd, 0);
-    else if (g_args.map_mode == SPACE_MODE)
-        zeros = mmap(NULL, SPACE_SIZE + HASH_INDEX_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, g_args.hash_table_fd, 0);
+    zeros = mmap(NULL, HASH_INDEX_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, g_args.hash_table_fd, 0);
     assert(zeros != (void *) -1);
 
 
@@ -973,7 +901,6 @@ int main(int argc, char *argv[])
     ////////////////////////////////////////////////
     if ( g_args.run_mode == INIT_MODE ) {
         fprintf(stdout, "Performing Initialization!\n");
-
         init();
         bplus_tree_deinit(g_args.tree);
         print_debug_info();
@@ -982,19 +909,13 @@ int main(int argc, char *argv[])
     ////////////        NORMAL MODE       //////////
     ////////////////////////////////////////////////
     } else if ( g_args.run_mode == RUN_MODE ){
-        if (g_args.cmd_debug)
-            print_cmd_args();
-
         /* By convention the first entry in the hash log is a pointer to the hash
          * log free list. Likewise for the data log. */
-        seek_to_hash_log(g_args.hash_table_fd, 0);
+        SEEK_TO_HASH_LOG(g_args.hash_table_fd, 0);
         err = read(g_args.hash_table_fd, &hash_log_free_list, sizeof(uint64_t));
         assert( err == sizeof(uint64_t));
 
         data_log_free_offset = 0;
-//        seek_to_data_log_free_list(fd);
-//        err = read(fd, &(g_args.data_log_free_list), sizeof(struct data_log_free_list_node));
-//        assert(err == sizeof(struct data_log_free_list_node));
 
         /* Listen SIGINT signal */
         signal(SIGINT, &dedup_disc);
@@ -1027,7 +948,6 @@ int main(int argc, char *argv[])
         free(cache);
         zlog_fini();
         bplus_tree_deinit(g_args.tree);
-
         return 0;
     }
 }
