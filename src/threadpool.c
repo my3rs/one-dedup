@@ -390,7 +390,7 @@ static void *threadpool_thread(void *threadpool)
         /* Unlock */
         pthread_mutex_unlock(&(pool->lock));
 
-        /* 执行任务 */
+        /* Exec out task */
         (*(task.function))(task.argument);
 
         pthread_mutex_lock(&(pool->busy_thrcount_mutex));

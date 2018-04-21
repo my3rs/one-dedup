@@ -145,7 +145,7 @@ void mt_do_work(void *data) {
 	case NBD_CMD_READ:
 		len = ntohl(w->len);
 		from = ntohll(w->from);
-		fprintf(stderr, "Request for read of size %d\n", len);
+//		fprintf(stderr, "Request for read of size %d\n", len);
 		//assert(aop->read);
 		w->buf = malloc(len);
 		reply.error = mt->aop->read(w->buf, len, from, mt->userdata);
@@ -160,7 +160,7 @@ void mt_do_work(void *data) {
 		// fprintf(stderr, "Request for write of size %d\n", len);
 		len = ntohl(w->len);
 		from = ntohll(w->from);
-        fprintf(stderr, "Request for write of size %d\n", len);
+//        fprintf(stderr, "Request for write of size %d\n", len);
 		reply.error = mt->aop->write(w->buf, len, from, mt->userdata);
 //        fprintf(stderr, "Request err write %d\n", reply.error);
 		pthread_mutex_lock(&(mt->wlock));
