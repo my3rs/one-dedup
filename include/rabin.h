@@ -22,7 +22,7 @@ struct rabin_t {
 
 struct chunk_t {
     uint64_t start;
-    uint64_t length;
+    uint32_t length;
     uint64_t cut_fingerprint;
 };
 
