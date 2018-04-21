@@ -27,7 +27,6 @@
         for (pos = (head)->next, n = pos->next; pos != (head); \
                 pos = n, n = pos->next)
 
-typedef int key_t;
 
 
 typedef struct block_map_entry value_t;
@@ -97,7 +96,7 @@ struct bplus_non_leaf {
         off_t next;
         int type;
         int children;
-        key_t key[BPLUS_MAX_ORDER - 1];
+        uint64_t key[BPLUS_MAX_ORDER - 1];
         off_t sub_ptr[BPLUS_MAX_ORDER];
 };
 
@@ -108,7 +107,7 @@ struct bplus_leaf {
         off_t next;
         int type;
         int entries;
-        key_t key[BPLUS_MAX_ENTRIES];
+        uint64_t key[BPLUS_MAX_ENTRIES];
         long data[BPLUS_MAX_ENTRIES];
 };
 */
@@ -130,14 +129,14 @@ struct bplus_tree {
 };
 
 void bplus_tree_dump(struct bplus_tree *tree);
-value_t bplus_tree_get(struct bplus_tree *tree, key_t key);
-int bplus_tree_put(struct bplus_tree *tree, key_t key, value_t data);
-value_t bplus_tree_get_range(struct bplus_tree *tree, key_t key1, key_t key2);
+value_t bplus_tree_get(struct bplus_tree *tree, uint64_t key);
+int bplus_tree_put(struct bplus_tree *tree, uint64_t key, value_t data);
+value_t bplus_tree_get_range(struct bplus_tree *tree, uint64_t key1, uint64_t key2);
 struct bplus_tree *bplus_tree_init(char *filename, int block_size);
 void bplus_tree_deinit(struct bplus_tree *tree);
 int bplus_open(char *filename);
 void bplus_close(int fd);
-int bplus_tree_rem(struct bplus_tree *tree, key_t key);
-value_t bplus_tree_get_fuzzy(struct bplus_tree *tree, key_t key);
+int bplus_tree_rem(struct bplus_tree *tree, uint64_t key);
+value_t bplus_tree_get_fuzzy(struct bplus_tree *tree, uint64_t key);
 
 #endif  /* _BPLUS_TREE_H */
