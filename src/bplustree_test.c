@@ -2,7 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../lib/bplustree.h"
+#include "bplustree.h"
 
 struct bplus_tree_config {
     char filename[1024];
