@@ -47,6 +47,7 @@ struct g_args_t {
     char *phy_device_name;
     int run_mode;
     zlog_category_t* write_block_category;
+    zlog_category_t* log_error;
     struct bplus_tree *tree;
     struct data_log_free_list_node data_log_free_list;
     bool cmd_debug;
@@ -55,7 +56,6 @@ struct g_args_t {
     bool read_debug;
     bool write_debug;
 };
-
 struct g_args_t g_args;
 
 static int fd;
@@ -69,6 +69,12 @@ enum mode{
     RUN_MODE  = 1,
 };
 
+struct last_request_t {
+    unsigned char buffer[2 * 128 * 1024];
+    uint  length;   // if length == 0, last_request is not available
+};
+
+struct last_request_t last_request;
 
 
 // ===================================================
@@ -130,7 +136,7 @@ static int seek_to_data_log(int _fd, uint64_t offset)
     return 0;
 }
 
-static void fingerprint_to_str(char *dest, unsigned char *src)
+static void fingerprint_to_str(char *dest, char *src)
 {
     for (int i=0; i<SHA_DIGEST_LENGTH; i++)
         sprintf(&dest[i*2], "%02x", (unsigned int)src[i]);
@@ -186,9 +192,6 @@ static int hash_index_get_bucket(char *hash, hash_bucket *bucket)
     /* We don't need to look at the entire hash, just the last few bytes. */
     int32_t *hash_tail = (int32_t *)(hash + FINGERPRINT_SIZE - sizeof(int32_t));
     int bucket_index = *hash_tail % NBUCKETS;
-
-//    printf("hash_tail: %u,NBUCKETS: %llu, index: %d\n", *hash_tail, NBUCKETS, bucket_index);
-
     SEEK_TO_BUCKET(g_args.hash_table_fd, bucket_index);
     int err = read(g_args.hash_table_fd, bucket,
             sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
@@ -226,10 +229,12 @@ static int hash_index_insert(char *hash, uint64_t hash_log_address)
 
     // Debug info. If we get to here, error occurs.
     char str_fp[SHA_DIGEST_LENGTH*2+1];
-    for(int i = 0; i < SHA_DIGEST_LENGTH; i++) {
-        sprintf(&str_fp[i*2], "%02x", (unsigned int)hash[i]);
-    }
+    fingerprint_to_str(str_fp, hash);
     printf("[HASH INDEX INSERT] | Debug | Hash: %s\n", str_fp);
+
+    char log_line[1024*1024];
+    sprintf(log_line, "[HASH INDEX INSERT] | Debug | Hash: %s", str_fp);
+    zlog_info(g_args.log_error, log_line);
 
     /* We failed to find a slot. In the future it would be nice to have a more
      * sophisticated hash table that resolves collisions better. But for now we
@@ -276,9 +281,6 @@ static uint64_t hash_log_new()
     SEEK_TO_HASH_LOG(g_args.hash_table_fd, new_block);
     int err = read(g_args.hash_table_fd, &hash_log_free_list, sizeof(uint64_t));
     assert(err == sizeof(uint64_t));
-
-
-//    printf("[HASH LOG NEW] | DEBUG | free hash log address: %lu\n", new_block);
     return new_block;
 }
 
@@ -474,7 +476,8 @@ static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset
     SHA1(buf, block_size, (unsigned char *) fingerprint);
 
     if (fingerprint_is_zero(fingerprint)) {
-        printf("[write one block] | debug | fingerprint is zero\n");
+        zlog_info(g_args.log_error,
+                  "[write one block] | debug | fingerprint is zero");
     }
 
     /* Update b+tree anyway, even though this fingerprint has already been stored */
@@ -515,7 +518,7 @@ static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset
 //        err = write(fd, buf, block_size);
         if (g_args.write_debug)
             printf("[WRITE NEW BLOCK] | size: %d, offset %lu\n", block_size, hl_entry.data_log_offset);
-        assert(err == (int)block_size);
+//        assert(err == (int)block_size);
     } else {
         /* This block has already been stored. We just need to increase the
          * refcount. */
@@ -538,22 +541,30 @@ static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset
 
 static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
 {
+    printf("[DEDUP] | Handling write request | len: %u, offset: %lu\n", len, offset);
+    uint32_t remaining;
+    void *new_buf;
+    if (last_request.length) {
+        new_buf = malloc(last_request.length + len);
+        memcpy(new_buf, last_request.buffer, last_request.length);
+        memcpy(new_buf+last_request.length, buf, len);
+        remaining = last_request.length + len;
+    } else {
+        new_buf = buf;
+        remaining = len;
+    }
     int err;
     struct rabin_t *hash = rabin_init();
-    uint8_t *ptr = buf;
+    uint8_t *ptr = new_buf;
 
-    if (len < MIN_BLOCK_SIZE) {
-        err = write_one_block(buf, len, offset);
-        assert(err == 0);
+    if (remaining < MAX_BLOCK_SIZE) {
+        memcpy(last_request.buffer, new_buf, remaining);
+        last_request.length = remaining;
         return 0;
     }
 
     while(1) {
-        int remaining = rabin_next_chunk(hash, ptr, len);
-
-        if (remaining < 0) {
-            break;
-        }
+        remaining = rabin_next_chunk(hash, ptr, len);
 
         len -= remaining;
         ptr += remaining;
@@ -564,18 +575,29 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
                    last_chunk.start, last_chunk.length, (long long unsigned int)last_chunk.cut_fingerprint);
 
         /* Write a block */
-        assert(last_chunk.start < 10000000);
         err = write_one_block(buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
         assert(err == 0);
+
+        if (len < MAX_BLOCK_SIZE) {
+            break;
+        }
     }
 
-    if (rabin_finalize(hash) != NULL) {
-//        if (g_args.rabin_debug)
+    if (remaining == -1 && rabin_finalize(hash) != NULL) {
+        last_request.length = 0;
+        if (g_args.rabin_debug)
             printf("[LAST] | %u %016llx\n",
                    last_chunk.length,
                    (long long unsigned int)last_chunk.cut_fingerprint);
         err = write_one_block(buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
         assert(err == 0);
+        return 0;
+    }
+
+    if (len >= 0) {
+        memcpy(last_request.buffer, ptr, len);
+        last_request.length = len;
+        return 0;
     }
     return 0;
 }
@@ -709,8 +731,9 @@ static int init()
     uint64_t i;
     int err;
 
-    err = write(g_args.hash_table_fd, zeros, HASH_INDEX_SIZE);
-    assert(err == HASH_INDEX_SIZE);
+//    err = write(g_args.hash_table_fd, zeros, HASH_INDEX_SIZE/2);
+
+//    assert(err == HASH_INDEX_SIZE);
 
     printf("init %llu buckets\n", NBUCKETS);
 
@@ -748,7 +771,7 @@ int open_phy_device(char *filename)
     stat(filename, &phy_file_stat);
     if (S_ISBLK(phy_file_stat.st_mode)){
         /* specified a block device */
-        fd = open(filename, O_RDWR|O_DIRECT|O_LARGEFILE);
+        fd = open64(filename, O_RDWR|O_DIRECT|O_LARGEFILE);
     } else {
         /* FIXME: we should only handle physical device or regular file(not created) */
         fd = open64(filename, O_RDWR|O_CREAT|O_LARGEFILE);
@@ -761,7 +784,7 @@ int open_phy_device(char *filename)
 
 void static open_hash_file(char *filename)
 {
-    g_args.hash_table_fd = open(filename, O_RDWR | O_CREAT);
+    g_args.hash_table_fd = open64(filename, O_CREAT|O_RDWR|O_LARGEFILE);
     assert(g_args.hash_table_fd != -1);
 }
 
@@ -846,7 +869,7 @@ static void print_cmd_args()
     printf("data free list offset: %lu\n", g_args.data_log_free_list.offset);
     printf("data free list size: %lu\n", g_args.data_log_free_list.size);
     printf("data free list next: %lu\n", g_args.data_log_free_list.next);
-    printf("======================================");
+    printf("===================================\n");
 }
 
 
@@ -887,8 +910,10 @@ int main(int argc, char *argv[])
     open_hash_file(g_args.hash_table_filename);
     open_phy_device(g_args.phy_device_name);
 
-    if (g_args.cmd_debug)
+    if (g_args.cmd_debug) {
+        print_debug_info();
         print_cmd_args();
+    }
 
 
     /* Init zeros */
@@ -943,7 +968,13 @@ int main(int argc, char *argv[])
             zlog_fini();
             return -2;
         }
-
+        g_args.log_error = zlog_get_category("error");
+        if (!g_args.log_error) {
+            fprintf(stderr, "get log_error failed\n");
+            zlog_fini();
+            return -2;
+        }
+        last_request.length = 0;
         buse_main(g_args.nbd_device_name, &bop, NULL);
         free(cache);
         zlog_fini();
