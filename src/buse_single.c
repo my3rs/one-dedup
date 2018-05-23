@@ -1,3 +1,22 @@
+/*
+ * buse - block-device userspace extensions
+ * Copyright (C) 2013 Adam Cozzette
+ *
+ * This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; either version 2 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -156,7 +175,7 @@ int buse_main(const char* dev_file, const struct buse_operations *aop, void *use
              * and writes.
              */
             case NBD_CMD_READ:
-//                fprintf(stderr, "Request for read of size %d\n", len);
+                fprintf(stderr, "Request for read of size %d\n", len);
                 /* Fill with zero in case actual read is not implemented */
                 chunk = malloc(len);
                 if (aop->read) {
@@ -171,7 +190,7 @@ int buse_main(const char* dev_file, const struct buse_operations *aop, void *use
                 free(chunk);
                 break;
             case NBD_CMD_WRITE:
-//                fprintf(stderr, "Request for write of size %d\n", len);
+                fprintf(stderr, "Request for write of size %d\n", len);
                 chunk = malloc(len);
                 read_all(sk, chunk, len);
                 if (aop->write) {

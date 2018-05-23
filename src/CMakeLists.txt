@@ -26,8 +26,7 @@ target_link_libraries(bplustree_test bplustree)
 add_executable(rabin_test rabin_test.c)
 target_link_libraries(rabin_test rabin crypto ssl)
 
-# read hash file
-add_executable(read_hashfile read_hashfile.c libhashfile.c)
+
 
 
 

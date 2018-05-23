@@ -109,16 +109,24 @@ void rabin_reset(struct rabin_t *h) {
     rabin_slide(h, 1);
 }
 
-int rabin_next_chunk(struct rabin_t *h, uint8_t *buf, unsigned int len) {
+int rabin_next_chunk(struct rabin_t *h, uint8_t *buf, unsigned int len, uint64_t *skip) {
     for (unsigned int i = 0; i < len; i++) {
-        uint8_t b = *buf++;
+        uint8_t b;
+
+        for (;h->count < MIN_BLOCK_SIZE;) {
+            b = *buf++;
+            rabin_slide(h, b);
+            h->count ++;
+            h->pos ++;
+            *skip = *skip + 1;
+        }
+
+        b = *buf++;
 
         rabin_slide(h, b);
 
         h->count++;
         h->pos++;
-
-//        printf("!!!!count: %d, pos: %d\n", h->count, h->pos);
 
         if ((h->count >= MIN_BLOCK_SIZE && ((h->digest & MASK) == 0)) || h->count >= MAX_BLOCK_SIZE) {
             last_chunk.start = h->start;

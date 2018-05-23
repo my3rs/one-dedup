@@ -5,7 +5,7 @@
 #include "rabin.h"
 
 
-#define SIZE ( 11ull * 1024ull * 1024ull * 1024ull)
+#define SIZE ( 18ull * 1024ull * 1024ull * 1024ull)
 #define HASH_LOG_BLOCK_SIZE ( 4 * 1024 )
 #define VIR_BLOCK_SIZE MAX_BLOCK_SIZE
 #define FINGERPRINT_SIZE 20
@@ -20,6 +20,13 @@
 #define HASH_INDEX_SIZE \
     (ENTRIES_PER_BUCKET * NBUCKETS * sizeof(struct hash_index_entry))
 #define HASH_LOG_SIZE (NPHYS_BLOCKS * sizeof(struct hash_log_entry))
+
+/// Space mode
+#define MAX_BLOCK_SIZE ( 32 * 1024 )
+#define MIN_BLOCK_SIZE ( 2 * 1024 )
+#define ENTRIES_PER_SPACE ( MAX_BLOCK_SIZE / MIN_BLOCK_SIZE )
+#define SPACE_LENGTH MAX_BLOCK_SIZE
+#define SPACE_SIZE ( SPACE_LENGTH * NVIRT_BLOCKS )
 
 /* The size of the fingerprint cache, described in terms of how many bits are
  * used to determine the location of a cache line. Here, we use the first 20
@@ -54,6 +61,8 @@ struct block_map_entry {
     uint32_t    length;
     char        fingerprit[FINGERPRINT_SIZE];
 } block_map_entry;
+
+typedef struct block_map_entry hash_space[ENTRIES_PER_SPACE];
 
 #define BOLD                 "\e[1m"
 #define NONE                 "\e[0m"

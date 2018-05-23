@@ -34,7 +34,7 @@ int main() {
         while (1) {
             int remaining = rabin_next_chunk(hash, ptr, len);
 
-            if (remaining < 0) {
+            if (remaining < 0 ) {
                 break;
             }
 
@@ -44,8 +44,8 @@ int main() {
             SHA1(buf + last_chunk.start, last_chunk.length, fingerprint);
             for (int i=0; i<SHA_DIGEST_LENGTH; i++)
                 sprintf(&str_fp[i*2], "%02x", (unsigned int)fingerprint[i]);
-            fprintf(stderr, "start: %lu len: %lu fingerprint: %s\n",
-                    last_chunk.start, last_chunk.length, str_fp);
+            fprintf(stderr, "start: %lu len: %u remaining: %u len: %lu\n",
+                    last_chunk.start, last_chunk.length, remaining, len);
 
             chunks++;
         }
@@ -58,10 +58,10 @@ int main() {
         SHA1(buf + last_chunk.start, last_chunk.length, fingerprint);
         for (int i=0; i<SHA_DIGEST_LENGTH; i++)
             sprintf(&str_fp[i*2], "%02x", (unsigned int)fingerprint[i]);
-        fprintf(stderr,"[LAST] start:%lu len: %lu fingerprint: %s\n",
+        fprintf(stderr,"[LAST] start:%lu len: %u\n",
                last_chunk.start,
-               last_chunk.length,
-               fingerprint);
+               last_chunk.length
+               );
     }
 
     unsigned int avg = 0;

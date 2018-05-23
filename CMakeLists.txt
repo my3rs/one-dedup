@@ -10,5 +10,4 @@ set(D_FILE_OFFSET_BITS 64)
 
 # main
 add_executable(dedup main.c)
-#TARGET_LINK_LIBRARIES(dedup buse crypto ssl pthread zlog bplustree rabin)
 TARGET_LINK_LIBRARIES(dedup buse_single crypto ssl pthread zlog bplustree rabin)
