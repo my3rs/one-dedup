@@ -4,29 +4,26 @@
 #include <stdint.h>
 #include "rabin.h"
 
+#define SHA_DIGEST_LENGTH 48
 
 #define SIZE ( 18ull * 1024ull * 1024ull * 1024ull)
 #define HASH_LOG_BLOCK_SIZE ( 4 * 1024 )
 #define VIR_BLOCK_SIZE MAX_BLOCK_SIZE
 #define FINGERPRINT_SIZE 20
 
-/* We advertise twice as many virtual blocks as we have physical blocks. */
-#define NPHYS_BLOCKS (SIZE / MIN_BLOCK_SIZE)
-#define NVIRT_BLOCKS (2 * NPHYS_BLOCKS)
+#define N_BLOCKS (SIZE / (MIN_BLOCK_SIZE + MAX_BLOCK_SIZE) * 2)
 
 /* Main on-disk data structures: block map, hash index, and hash log. */
 #define ENTRIES_PER_BUCKET 16
-#define NBUCKETS NVIRT_BLOCKS
+#define NBUCKETS N_BLOCKS
 #define HASH_INDEX_SIZE \
     (ENTRIES_PER_BUCKET * NBUCKETS * sizeof(struct hash_index_entry))
-#define HASH_LOG_SIZE (NPHYS_BLOCKS * sizeof(struct hash_log_entry))
-
+#define HASH_LOG_SIZE (N_BLOCKS * sizeof(struct hash_log_entry))
 /// Space mode
-#define MAX_BLOCK_SIZE ( 32 * 1024 )
-#define MIN_BLOCK_SIZE ( 2 * 1024 )
 #define ENTRIES_PER_SPACE ( MAX_BLOCK_SIZE / MIN_BLOCK_SIZE )
 #define SPACE_LENGTH MAX_BLOCK_SIZE
-#define SPACE_SIZE ( SPACE_LENGTH * NVIRT_BLOCKS )
+#define N_SPACES N_BLOCKS
+#define SPACE_SIZE ( SPACE_LENGTH * N_SPACES )
 
 /* The size of the fingerprint cache, described in terms of how many bits are
  * used to determine the location of a cache line. Here, we use the first 20

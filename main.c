@@ -38,15 +38,16 @@
 //                  Global Variables
 // ===================================================
 
+#define TREE_FILENAME "./tree"
+#define HASH_FILENAME "./hash"
+#define IMAGE_FILENAME "./image"
+#define NBD_DEVICE "/dev/nbd0"
+
 struct g_args_t {
     int MAP;
-    char *hash_table_filename;
     int hash_table_fd;
-    char *bplustree_filename;
 
     int fd;
-    char *nbd_device_name;
-    char *phy_device_name;
     int run_mode;
     zlog_category_t* write_block_category;
     zlog_category_t* log_error;
@@ -110,7 +111,6 @@ clock_t bs_write = 0;
         lseek64((fd), (i) * SPACE_LENGTH, SEEK_SET); \
     } while (0)
 
-
 #define SEEK_TO_DATA_LOG(fd, offset) \
     do { \
         lseek64((fd), (offset), SEEK_SET); \
@@ -142,13 +142,9 @@ static void usage()
 
 static void print_debug_info()
 {
-    fprintf(stderr, "nbd device: %s\n", g_args.nbd_device_name);
-    fprintf(stderr, "phy device: %s\n", g_args.phy_device_name);
     fprintf(stderr, "SIZE is %lluM\n", SIZE/1024/1024);
     fprintf(stderr, "HASH_INDEX_SIZE is %llu\n", HASH_INDEX_SIZE);
     fprintf(stderr, "HASH_LOG_SIZE is %llu\n", HASH_LOG_SIZE);
-    fprintf(stderr, "NPHYS_BLOCKS is %llu\n", NPHYS_BLOCKS);
-    fprintf(stderr, "NVIRT_BLOCKS is %llu\n", NVIRT_BLOCKS);
 }
 
 
@@ -811,29 +807,43 @@ static int dedup_trim(uint64_t from, uint32_t len)
 }
 
 
-/**
- * Init in B+TREE mode.
- */
 static int init()
 {
     uint64_t i;
     ssize_t err;
 
-//    err = write(g_args.hash_table_fd, zeros, HASH_INDEX_SIZE/2);
 
-//    assert(err == HASH_INDEX_SIZE);
-
-    if (g_args.MAP == SPACE_MODE) {
-        void *newe_zeros = malloc(SPACE_SIZE);
-        err = write(g_args.hash_table_fd, newe_zeros, SPACE_SIZE);
-        assert(err == SPACE_SIZE);
+    if (access("./image", F_OK) != -1) {
+        if (remove("./image") == 0) {
+            printf("Removed existed file %s\n", "./image");
+        } else {
+            perror("Remove image file");
+        }
     }
+
+    if (access(TREE_FILENAME, F_OK) != -1) {
+        if (remove(TREE_FILENAME) == 0) {
+            printf("Removed existed file %s\n", TREE_FILENAME);
+        } else {
+            perror("Remove B+Tree db file");
+        }
+    }
+    char tree_boot_filename[255];
+    sprintf(tree_boot_filename, "%s.boot", TREE_FILENAME);
+    if (access(tree_boot_filename, F_OK) != -1) {
+        if (remove(tree_boot_filename) == 0) {
+            printf("Removed existed file %s\n", tree_boot_filename);
+        } else {
+            perror("Remove B+Tree boot file");
+        }
+    }
+
 
     /* We now initialize the hash log and data log. These start out empty, so we
      * put everything in the free list. It might be more efficient to stage this
      * in memory and then write it out in larger blocks. But the Linux buffer
      * cache will probably take care of that anyway for now. */
-    for (i = 1; i <= NPHYS_BLOCKS; i++) {
+    for (i = 1; i <= N_BLOCKS; i++) {
         SEEK_TO_HASH_LOG(g_args.hash_table_fd, i - 1);
         err = write(g_args.hash_table_fd, &i, sizeof(uint64_t));
         assert(err == sizeof(uint64_t));
@@ -847,42 +857,29 @@ static int init()
 //    seek_to_data_log_free_list(fd);
 //    err = write(fd, &(g_args.data_log_free_list), sizeof(struct data_log_free_list_node));
 //    assert(err == sizeof(struct data_log_free_list_node));
-
-
-
     return 0;
 }
 
 
-/**
- * @brief : Open a device file or a regular file specified by -p
- */
-int open_phy_device(char *filename)
+void open_file(void)
 {
     struct stat phy_file_stat;
-    stat(filename, &phy_file_stat);
+    stat(IMAGE_FILENAME, &phy_file_stat);
     if (S_ISBLK(phy_file_stat.st_mode)){
         /* specified a block device */
-        g_args.fd = open64(filename, O_RDWR|O_DIRECT|O_LARGEFILE);
+        g_args.fd = open64(IMAGE_FILENAME, O_RDWR|O_DIRECT|O_LARGEFILE);
     } else {
         /* FIXME: we should only handle physical device or regular file(not created) */
-        g_args.fd = open64(filename, O_RDWR|O_CREAT|O_LARGEFILE);
+        g_args.fd = open64(IMAGE_FILENAME, O_RDWR|O_CREAT|O_LARGEFILE);
     }
     assert(g_args.fd != -1);
 
-
-    return 0;
-}
-
-void static open_hash_file(char *filename)
-{
-    g_args.hash_table_fd = open64(filename, O_CREAT|O_RDWR|O_LARGEFILE, 0644);
+    g_args.hash_table_fd = open64(HASH_FILENAME, O_CREAT|O_RDWR|O_LARGEFILE, 0644);
     assert(g_args.hash_table_fd != -1);
+
 }
 
-/**
- * Parse cmd args
- */
+
 void parse_command_line(int argc, char *argv[])
 {
     /* command line args */
@@ -890,45 +887,29 @@ void parse_command_line(int argc, char *argv[])
     const struct option long_opts[] = {
             {"init", required_argument, NULL, 'i'},
             {"nbd", required_argument, NULL, 'n'},
-            {"physical-device", required_argument, NULL, 'p'},
-            {"hash-file", required_argument, NULL, 'a'},
             {"help", no_argument, NULL, 'h'},
-            {"space", required_argument, NULL, 's'},
-            {"btree", required_argument, NULL, 'b'},
+            {"space", no_argument, NULL, 's'},
+            {"btree", no_argument, NULL, 'b'},
             {NULL, 0, NULL, NULL},
     };
 
-//    if (argc <= 5) {
-//        usage();
-//        exit(-1);
-//    }
-
     // default opts
-    g_args.hash_table_filename = "./hash.db";
-    g_args.phy_device_name = "./image";
-    g_args.nbd_device_name = "/dev/nbd0";
-    g_args.bplustree_filename = "./bptree.db";
     g_args.MAP = BPTREE_MODE;
 
     int opt = getopt_long(argc, argv, opt_string, long_opts, NULL);
     while( opt != -1 ) {
         switch(opt) {
-            case 'a':   // hash data file
-                g_args.hash_table_filename = optarg;
-                break;
             case 'i':   // init mode
                 g_args.run_mode = INIT_MODE;
-                g_args.nbd_device_name = optarg;
                 break;
             case 'n':   // nbd device
                 g_args.run_mode = RUN_MODE;
-                g_args.nbd_device_name = optarg;
-                break;
-            case 'p':   // image file
-                g_args.phy_device_name = optarg;
                 break;
             case 'b':   // b+tree mode
-                g_args.bplustree_filename = optarg;
+                g_args.MAP = BPTREE_MODE;
+                break;
+            case 's':
+                g_args.MAP = SPACE_MODE;
                 break;
             case 'h':   // help
             default:
@@ -945,8 +926,8 @@ void parse_command_line(int argc, char *argv[])
 static void print_cmd_args()
 {
     printf("========== cmd opts ==============\n");
-    printf("nbd device: %s\n", g_args.nbd_device_name);
-    printf("physical device: %s\n", g_args.phy_device_name);
+    printf("nbd device: %s\n", NBD_DEVICE);
+    printf("physical device: %s\n", IMAGE_FILENAME);
     switch (g_args.run_mode) {
         case RUN_MODE:
             printf("run mode: normal\n");
@@ -966,15 +947,14 @@ static void print_cmd_args()
 }
 
 
-
-static void debug_settings()
+static void default_settings(void)
 {
-    // DEBUG settings
     g_args.cmd_debug = false;
     g_args.rabin_debug = false;
     g_args.read_debug = false;
     g_args.write_debug = false;
 }
+
 
 /**
  * Main entry
@@ -985,24 +965,20 @@ int main(int argc, char *argv[])
     prog_begin = clock();
     ssize_t err;
 
-    debug_settings();
+    default_settings();
     /* First, we parse the cmd line */
     parse_command_line(argc, argv);
 
-    g_args.tree = bplus_tree_init(g_args.bplustree_filename, 4096);
-    open_hash_file(g_args.hash_table_filename);
-    open_phy_device(g_args.phy_device_name);
+    if (g_args.MAP == BPTREE_MODE) {
+        g_args.tree = bplus_tree_init(TREE_FILENAME, 4096);
+    }
+
+    open_file();
 
     if (g_args.cmd_debug) {
         print_debug_info();
         print_cmd_args();
     }
-
-
-    /* Init zeros */
-    zeros = mmap(NULL, HASH_INDEX_SIZE, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, g_args.hash_table_fd, 0);
-    assert(zeros != (void *) -1);
-
 
     ////////////////////////////////////////////////
     ////////////         INIT MODE        //////////
@@ -1058,10 +1034,11 @@ int main(int argc, char *argv[])
             return -2;
         }
         last_request.length = 0;
-        buse_main(g_args.nbd_device_name, &bop, NULL);
+        buse_main(IMAGE_FILENAME, &bop, NULL);
         free(cache);
         zlog_fini();
-        bplus_tree_deinit(g_args.tree);
+        if (g_args.MAP == BPTREE_MODE)
+            bplus_tree_deinit(g_args.tree);
         return 0;
     }
 }
