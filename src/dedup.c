@@ -1,121 +1,35 @@
-#define _GNU_SOURCE
-#define _LARGEFILE_SOURCE
-#define _LARGEFILE64_SOURCE
-#define _FILE_OFFSET_BITS 64
 
-#include <sys/stat.h>
-#include <unistd.h>
-#include <time.h>
-#include <assert.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <inttypes.h>
-#include <openssl/sha.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <sys/types.h>
-#include <unistd.h>
-#include <getopt.h>
-#include <sys/stat.h>
-#include <signal.h>
-#include <zlog.h>       // log
 #include "dedup.h"
-#include "private/errors.h"
-//#include "buse.h"
-#include "buse_single.h"
-#include <stdbool.h>
-#include <time.h>
-#include "bplustree.h"
-#include "rabin.h"
 
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
+static void *zeros;
+static uint64_t skip_len;
 
-
-
-// ===================================================
-//                  Global Variables
-// ===================================================
-
-#define TREE_FILENAME "./tree"
-#define HASH_FILENAME "./hash"
-#define IMAGE_FILENAME "./image"
-#define NBD_DEVICE "/dev/nbd0"
-
-struct g_args_t {
-    int MAP;
-    int hash_table_fd;
-
-    int fd;
-    int run_mode;
-    zlog_category_t* write_block_category;
-    zlog_category_t* log_error;
-    struct bplus_tree *tree;
-    struct data_log_free_list_node data_log_free_list;
-    bool cmd_debug;
-    bool rabin_debug;
-    bool read_debug;
-    bool write_debug;
-};
 struct g_args_t g_args;
 
 static void *zeros;
-static struct hash_log_entry *cache;
+
 static uint64_t hash_log_free_list;
 static uint64_t data_log_free_offset;
 static uint64_t skip_len;
-
-enum mode{
-    INIT_MODE = 0,
-    RUN_MODE  = 1,
-    BPTREE_MODE = 2,
-    SPACE_MODE =3,
-};
-
-struct last_request_t {
-    unsigned char buffer[2 * 128 * 1024];
-    uint  length;   // if length == 0, last_request is not available
-};
-
-struct last_request_t last_request;
-
 clock_t prog_begin, prog_end;
 clock_t write_clock = 0, detect_clock = 0;
 clock_t bs_read = 0;
 clock_t bs_write = 0;
 
+struct last_request_t last_request;
+struct hash_log_entry *cache;
 
-// ===================================================
-//               Tool Functions: Seek
-// ===================================================
+static void set_data_log_offset(uint64_t offset) {
+    data_log_free_offset = offset;
+}
 
-#define SEEK_TO_BUCKET(fd, i) \
-    do { \
-        if (g_args.MAP == BPTREE_MODE ) \
-            lseek64((fd), (i)*sizeof(hash_bucket), SEEK_SET); \
-        else if (g_args.MAP == SPACE_MODE) \
-            lseek64((fd), SPACE_SIZE + (i)*sizeof(hash_bucket), SEEK_SET); \
-    } while(0)
+static void set_hash_log_offset(uint64_t index) {
+    hash_log_free_list = index;
+}
 
-#define SEEK_TO_HASH_LOG(fd, i) \
-    do { \
-        if (g_args.MAP == BPTREE_MODE ) \
-            lseek64((fd), HASH_INDEX_SIZE + (i) * sizeof(struct hash_log_entry), SEEK_SET); \
-        else if (g_args.MAP == SPACE_MODE) \
-            lseek64((fd), SPACE_SIZE + HASH_INDEX_SIZE + (i) * sizeof(struct hash_log_entry), SEEK_SET); \
-    } while (0)
-
-#define SEEK_TO_SPACE(fd, i) \
-    do { \
-        lseek64((fd), (i) * SPACE_LENGTH, SEEK_SET); \
-    } while (0)
-
-#define SEEK_TO_DATA_LOG(fd, offset) \
-    do { \
-        lseek64((fd), (offset), SEEK_SET); \
-    } while(0)
-
+static struct g_args_t *gArgs() {
+    return &g_args;
+}
 
 static void fingerprint_to_str(char *dest, char *src)
 {
@@ -124,28 +38,6 @@ static void fingerprint_to_str(char *dest, char *src)
 
 }
 
-// ===================================================
-//                  Function Defines
-// ===================================================
-
-
-static void usage()
-{
-    fprintf(stderr, "Options:\n\n");
-    fprintf(stderr, BOLD"    -h, --help\n" NONE "\tdisplay the help infomation\n\n");
-    fprintf(stderr, BOLD"    -i, --init\n" NONE "\tspecify the nbd device and init\n\n");
-    fprintf(stderr, BOLD"    -a, --hash-file\n" NONE "\tspecify the hash file\n\n");
-    fprintf(stderr, BOLD"    -p, --physical-device\n" NONE "\tspecify the physical device or file\n\n");
-    fprintf(stderr, BOLD"    -s, --space\n" NONE "\tspace mapping mode\n\n");
-    fprintf(stderr, BOLD"    -b, --btree\n" NONE "\tb+tree mapping mode and specify b+tree db file\n\n");
-}
-
-static void print_debug_info()
-{
-    fprintf(stderr, "SIZE is %lluM\n", SIZE/1024/1024);
-    fprintf(stderr, "HASH_INDEX_SIZE is %llu\n", HASH_INDEX_SIZE);
-    fprintf(stderr, "HASH_LOG_SIZE is %llu\n", HASH_LOG_SIZE);
-}
 
 
 static int fingerprint_is_zero(const char *fingerprint)
@@ -211,7 +103,7 @@ static int hash_index_get_bucket(char *hash, hash_bucket *bucket)
     uint64_t bucket_index = *hash_tail % NBUCKETS;
     SEEK_TO_BUCKET(g_args.hash_table_fd, bucket_index);
     ssize_t err = read(g_args.hash_table_fd, bucket,
-            sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
+                       sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
     assert(err == sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
 
     return 0;
@@ -224,7 +116,7 @@ static int hash_index_put_bucket(char *hash, hash_bucket *bucket)
     uint64_t bucket_index = *hash_tail % NBUCKETS;
     SEEK_TO_BUCKET(g_args.hash_table_fd, bucket_index);
     ssize_t err = write(g_args.hash_table_fd, bucket,
-            sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
+                        sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
     assert(err == sizeof(struct hash_index_entry) * ENTRIES_PER_BUCKET);
 
     return 0;
@@ -326,7 +218,7 @@ static uint64_t physical_block_new(uint64_t blocksize)
 //    node = g_args.data_log_free_list;
 //
 //
-//    while (node.size < blocksize && node.next != INVALID_OFFSET) {
+//    while (node.size < blocksize && node.next != INVALID_PHY_OFFSET) {
 //        seek_to_data_log(fd, node.next);
 //        err = read(fd, &node, sizeof(struct data_log_free_list_node));
 //        assert(err == sizeof(struct data_log_free_list_node));
@@ -359,14 +251,14 @@ static int physical_block_free(uint64_t offest, uint64_t size)
     ssize_t err;
     SEEK_TO_DATA_LOG(g_args.fd, offest);
     struct data_log_free_list_node prev = g_args.data_log_free_list;
-    while(prev.next != INVALID_OFFSET) {
+    while(prev.next != INVALID_PHY_OFFSET) {
         SEEK_TO_DATA_LOG(g_args.fd, prev.next);
         err = read(g_args.fd, &prev, sizeof(struct data_log_free_list_node));
         assert(err == sizeof(struct data_log_free_list_node));
     }
 
     struct data_log_free_list_node node;
-    node.next = INVALID_OFFSET;
+    node.next = INVALID_PHY_OFFSET;
     node.offset = offest;
     node.size = size;
 
@@ -588,11 +480,12 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
     int remaining;
     clock_t detect_begin, detect_end;
 
-    if (last_request.length) {
+    assert(last_request.length >= 0);
+    if (last_request.length != 0) {
         new_buf = malloc(last_request.length + len);
         memcpy(new_buf, last_request.buffer, last_request.length);
         memcpy(new_buf+last_request.length, buf, len);
-        len = last_request.length + len;
+        len += last_request.length;
         last_request.length = 0;
     } else {
         new_buf = (uint8_t *)buf;
@@ -608,9 +501,6 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
         last_request.length = len;
         return 0;
     }
-
-
-
 
     while(1) {
         detect_begin = clock();
@@ -804,241 +694,4 @@ static int dedup_trim(uint64_t from, uint32_t len)
     (void) from;
     (void) len;
     return 0;
-}
-
-
-static int init()
-{
-    uint64_t i;
-    ssize_t err;
-
-
-    if (access("./image", F_OK) != -1) {
-        if (remove("./image") == 0) {
-            printf("Removed existed file %s\n", "./image");
-        } else {
-            perror("Remove image file");
-        }
-    }
-
-    if (access(TREE_FILENAME, F_OK) != -1) {
-        if (remove(TREE_FILENAME) == 0) {
-            printf("Removed existed file %s\n", TREE_FILENAME);
-        } else {
-            perror("Remove B+Tree db file");
-        }
-    }
-    char tree_boot_filename[255];
-    sprintf(tree_boot_filename, "%s.boot", TREE_FILENAME);
-    if (access(tree_boot_filename, F_OK) != -1) {
-        if (remove(tree_boot_filename) == 0) {
-            printf("Removed existed file %s\n", tree_boot_filename);
-        } else {
-            perror("Remove B+Tree boot file");
-        }
-    }
-
-
-    /* We now initialize the hash log and data log. These start out empty, so we
-     * put everything in the free list. It might be more efficient to stage this
-     * in memory and then write it out in larger blocks. But the Linux buffer
-     * cache will probably take care of that anyway for now. */
-    for (i = 1; i <= N_BLOCKS; i++) {
-        SEEK_TO_HASH_LOG(g_args.hash_table_fd, i - 1);
-        err = write(g_args.hash_table_fd, &i, sizeof(uint64_t));
-        assert(err == sizeof(uint64_t));
-    }
-
-    /* We use a list to manage free data log */
-//    g_args.data_log_free_list.offset = sizeof(struct data_log_free_list_node);
-//    g_args.data_log_free_list.next = INVALID_OFFSET;
-//    g_args.data_log_free_list.size = SIZE;
-//
-//    seek_to_data_log_free_list(fd);
-//    err = write(fd, &(g_args.data_log_free_list), sizeof(struct data_log_free_list_node));
-//    assert(err == sizeof(struct data_log_free_list_node));
-    return 0;
-}
-
-
-void open_file(void)
-{
-    struct stat phy_file_stat;
-    stat(IMAGE_FILENAME, &phy_file_stat);
-    if (S_ISBLK(phy_file_stat.st_mode)){
-        /* specified a block device */
-        g_args.fd = open64(IMAGE_FILENAME, O_RDWR|O_DIRECT|O_LARGEFILE);
-    } else {
-        /* FIXME: we should only handle physical device or regular file(not created) */
-        g_args.fd = open64(IMAGE_FILENAME, O_RDWR|O_CREAT|O_LARGEFILE);
-    }
-    assert(g_args.fd != -1);
-
-    g_args.hash_table_fd = open64(HASH_FILENAME, O_CREAT|O_RDWR|O_LARGEFILE, 0644);
-    assert(g_args.hash_table_fd != -1);
-
-}
-
-
-void parse_command_line(int argc, char *argv[])
-{
-    /* command line args */
-    const char *opt_string = "i:n:p:h:s:b";
-    const struct option long_opts[] = {
-            {"init", required_argument, NULL, 'i'},
-            {"nbd", required_argument, NULL, 'n'},
-            {"help", no_argument, NULL, 'h'},
-            {"space", no_argument, NULL, 's'},
-            {"btree", no_argument, NULL, 'b'},
-            {NULL, 0, NULL, NULL},
-    };
-
-    // default opts
-    g_args.MAP = BPTREE_MODE;
-
-    int opt = getopt_long(argc, argv, opt_string, long_opts, NULL);
-    while( opt != -1 ) {
-        switch(opt) {
-            case 'i':   // init mode
-                g_args.run_mode = INIT_MODE;
-                break;
-            case 'n':   // nbd device
-                g_args.run_mode = RUN_MODE;
-                break;
-            case 'b':   // b+tree mode
-                g_args.MAP = BPTREE_MODE;
-                break;
-            case 's':
-                g_args.MAP = SPACE_MODE;
-                break;
-            case 'h':   // help
-            default:
-                usage();
-                break;
-        }
-        opt = getopt_long(argc, argv, opt_string, long_opts, NULL);
-    }
-}
-
-/**
- * Print cmd args
- */
-static void print_cmd_args()
-{
-    printf("========== cmd opts ==============\n");
-    printf("nbd device: %s\n", NBD_DEVICE);
-    printf("physical device: %s\n", IMAGE_FILENAME);
-    switch (g_args.run_mode) {
-        case RUN_MODE:
-            printf("run mode: normal\n");
-            break;
-        case INIT_MODE:
-            printf("run mode: init\n");
-            break;
-        default:
-            printf("run mode: invalid\n");
-            break;
-    }
-
-    printf("data free list offset: %lu\n", g_args.data_log_free_list.offset);
-    printf("data free list size: %lu\n", g_args.data_log_free_list.size);
-    printf("data free list next: %lu\n", g_args.data_log_free_list.next);
-    printf("===================================\n");
-}
-
-
-static void default_settings(void)
-{
-    g_args.cmd_debug = false;
-    g_args.rabin_debug = false;
-    g_args.read_debug = false;
-    g_args.write_debug = false;
-}
-
-
-/**
- * Main entry
- */
-int main(int argc, char *argv[])
-{
-    skip_len = 0;
-    prog_begin = clock();
-    ssize_t err;
-
-    default_settings();
-    /* First, we parse the cmd line */
-    parse_command_line(argc, argv);
-
-    if (g_args.MAP == BPTREE_MODE) {
-        g_args.tree = bplus_tree_init(TREE_FILENAME, 4096);
-    }
-
-    open_file();
-
-    if (g_args.cmd_debug) {
-        print_debug_info();
-        print_cmd_args();
-    }
-
-    ////////////////////////////////////////////////
-    ////////////         INIT MODE        //////////
-    ////////////////////////////////////////////////
-    if ( g_args.run_mode == INIT_MODE ) {
-        fprintf(stdout, "Performing Initialization!\n");
-        init();
-        bplus_tree_deinit(g_args.tree);
-        print_debug_info();
-        return 0;
-    ////////////////////////////////////////////////
-    ////////////        NORMAL MODE       //////////
-    ////////////////////////////////////////////////
-    } else if ( g_args.run_mode == RUN_MODE ){
-        /* By convention the first entry in the hash log is a pointer to the hash
-         * log free list. Likewise for the data log. */
-        SEEK_TO_HASH_LOG(g_args.hash_table_fd, 0);
-        err = read(g_args.hash_table_fd, &hash_log_free_list, sizeof(uint64_t));
-        assert( err == sizeof(uint64_t));
-
-        data_log_free_offset = 0;
-
-        /* Listen SIGINT signal */
-        signal(SIGINT, &dedup_disc);
-
-        struct buse_operations bop = {
-                .read = dedup_read,
-                .write = dedup_write,
-                .disc = dedup_disc,
-                .flush = dedup_flush,
-                .trim = dedup_trim,
-                .size = SIZE,
-        };
-
-        cache = calloc(1 << CACHE_SIZE, sizeof(struct hash_log_entry));
-
-        /* Init zlog */
-        err = zlog_init("../../config/zlog.conf");
-        if(err) {
-            fprintf(stderr, "zlog init failed\n");
-            return -1;
-        }
-        g_args.write_block_category = zlog_get_category("write_block");
-        if (!g_args.write_block_category) {
-            fprintf(stderr, "get write_block_category failed\n");
-            zlog_fini();
-            return -2;
-        }
-        g_args.log_error = zlog_get_category("error");
-        if (!g_args.log_error) {
-            fprintf(stderr, "get log_error failed\n");
-            zlog_fini();
-            return -2;
-        }
-        last_request.length = 0;
-        buse_main(IMAGE_FILENAME, &bop, NULL);
-        free(cache);
-        zlog_fini();
-        if (g_args.MAP == BPTREE_MODE)
-            bplus_tree_deinit(g_args.tree);
-        return 0;
-    }
 }

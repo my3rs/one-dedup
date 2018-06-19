@@ -1315,12 +1315,12 @@ static void node_key_dump(struct bplus_node *node)
         if (is_leaf(node)) {
                 printf("leaf:");
                 for (i = 0; i < node->children; i++) {
-                        printf(" %d", key(node)[i]);
+                        printf(" %lu", key(node)[i]);
                 }
         } else {
                 printf("node:");
                 for (i = 0; i < node->children - 1; i++) {
-                        printf(" %d", key(node)[i]);
+                        printf(" %lu", key(node)[i]);
                 }
         }
         printf("\n");
