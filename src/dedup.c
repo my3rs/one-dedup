@@ -19,15 +19,15 @@ clock_t bs_write = 0;
 struct last_request_t last_request;
 struct hash_log_entry *cache;
 
-static void set_data_log_offset(uint64_t offset) {
+void set_data_log_offset(uint64_t offset) {
     data_log_free_offset = offset;
 }
 
-static void set_hash_log_offset(uint64_t index) {
+void set_hash_log_offset(uint64_t index) {
     hash_log_free_list = index;
 }
 
-static struct g_args_t *gArgs() {
+struct g_args_t *gArgs() {
     return &g_args;
 }
 
@@ -371,7 +371,7 @@ static int decrement_refcount(char *fingerprint)
 }
 
 // offset: nbd
-static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset)
+int write_one_block(const void *buf, uint32_t block_size, uint64_t offset)
 {
     char log_line[1024*1024];
     clock_t detect_begin, detect_end;
@@ -443,7 +443,7 @@ static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset
 //        SEEK_TO_DATA_LOG(g_args.fd, hl_entry.data_log_offset);
 //        err = write(g_args.fd, buf, block_size);
 //        assert(err == block_size);
-        if (g_args.write_debug)
+        if (WRITE_DEBUG)
             printf("[WRITE NEW BLOCK] | size: %d, offset %lu\n", block_size, hl_entry.data_log_offset);
         write_end = clock();
         write_clock += (write_end - write_begin);
@@ -459,7 +459,7 @@ static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset
         hl_entry.ref_count += 1;
         SEEK_TO_HASH_LOG(g_args.hash_table_fd, hash_log_address);
         err = write(g_args.hash_table_fd, &hl_entry, sizeof(struct hash_log_entry));
-        if (g_args.write_debug)
+        if (WRITE_DEBUG)
             printf("[WRITE OLD BLOCK]\n");
         assert(err == sizeof(struct hash_log_entry));
         detect_end = clock();
@@ -468,7 +468,7 @@ static int write_one_block(const void *buf, uint32_t block_size, uint64_t offset
     return 0;
 }
 
-static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
+int dedup_write(const void *buf, uint32_t len, uint64_t offset)
 {
     printf("Write time: %f s, Detect time: %f s\n",
            (float)write_clock/CLOCKS_PER_SEC, (float)detect_clock/CLOCKS_PER_SEC);
@@ -510,7 +510,7 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
         ptr += remaining;
 
         /* Print rabin debug information */
-        if(g_args.rabin_debug)
+        if(RABIN_DEBUG)
             printf("[RABIN] start: %lu, len: %u fingerprint: %016llx\n",
                    last_chunk.start, last_chunk.length, (long long unsigned int)last_chunk.cut_fingerprint);
 
@@ -530,10 +530,8 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
     if (remaining == -1 && rabin_finalize(hash) != NULL) {
         detect_begin = clock();
         last_request.length = 0;
-        if (g_args.rabin_debug)
-            printf("[LAST] | %u %016llx\n",
-                   last_chunk.length,
-                   (long long unsigned int)last_chunk.cut_fingerprint);
+        if (RABIN_DEBUG)
+            printf("[LAST] | %u %016llx\n", last_chunk.length, (long long unsigned int)last_chunk.cut_fingerprint);
 
 
         err = write_one_block(new_buf+last_chunk.start, last_chunk.length, offset+last_chunk.start);
@@ -554,7 +552,7 @@ static int dedup_write(const void *buf, uint32_t len, uint64_t offset)
 
 
 
-static int read_one_block(void *buf, uint32_t len, uint64_t offset)
+int read_one_block(void *buf, uint32_t len, uint64_t offset)
 {
     int err;
     SEEK_TO_DATA_LOG(g_args.fd, offset);
@@ -563,14 +561,14 @@ static int read_one_block(void *buf, uint32_t len, uint64_t offset)
     return 0;
 }
 
-static int dedup_read(void *buf, uint32_t len, uint64_t offset)
+int dedup_read(void *buf, uint32_t len, uint64_t offset)
 {
 
     if (last_request.length != 0) {
         dedup_write(NULL, 0, 0);
     }
 
-    if (g_args.read_debug)
+    if (READ_DEBUG)
         fprintf(stderr, "[HANDLE READ REQUEST] | len: %u offset: %lu\n", len, offset);
 
     char *bufi = buf;
@@ -610,7 +608,7 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
         tmp_entry = lookup_fingerprint(bmap_entry.fingerprit);
 
 
-        if (g_args.read_debug) {
+        if (READ_DEBUG) {
             printf("[DEDUP READ 1] | bmap start: %lu bmap end: %lu\n",
                    bmap_entry.start, bmap_entry.start + bmap_entry.length);
 //            printf("[DEDUP READ 2] | len: %u offset: %lu\n", read_size, offset);
@@ -637,7 +635,7 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
             return 0;
         }
         // We read a complete block
-        if (g_args.read_debug) {
+        if (READ_DEBUG) {
             printf("[DEDUP READ] | len: %u offset: %lu\n", bmap_entry.length, offset);
         }
         tmp_entry = lookup_fingerprint(bmap_entry.fingerprit);
@@ -659,7 +657,7 @@ static int dedup_read(void *buf, uint32_t len, uint64_t offset)
 
 /* Called upon receipt of a disconnect request. We need to make sure everything
  * is written to stable storage before this function returns. */
-static int dedup_disc()
+void dedup_disc()
 {
     prog_end = clock();
     printf("Run time: %.2f s\n", (float)(prog_end - prog_begin)/CLOCKS_PER_SEC);
@@ -681,14 +679,14 @@ static int dedup_disc()
     exit(0);
 }
 
-static int dedup_flush()
+int dedup_flush()
 {
     /* TODO: This is about nbd. */
     fprintf(stderr, "Just received a flush request.\n");
     return 0;
 }
 
-static int dedup_trim(uint64_t from, uint32_t len)
+int dedup_trim(uint64_t from, uint32_t len)
 {
     /* TODO: This is about nbd. */
     (void) from;
