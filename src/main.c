@@ -1,31 +1,31 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
+#ifndef _LARGEFILE_SOURCE
 #define _LARGEFILE_SOURCE
+#endif
+#ifndef  _LARGEFILE64_SOURCE
 #define _LARGEFILE64_SOURCE
+#endif
+#ifndef _FILE_OFFSET_BITS
 #define _FILE_OFFSET_BITS 64
+#endif
 
 #include <sys/stat.h>
 #include <unistd.h>
 #include <time.h>
-
 #include <fcntl.h>
 #include <inttypes.h>
-
-
-
 #include <sys/mman.h>
-
-
 #include <getopt.h>
 #include <sys/stat.h>
 #include <signal.h>
-
-#include "dedup.h"
-
-//#include "buse.h"
-#include "buse_single.h"
 #include <stdbool.h>
 #include <time.h>
 
+#include "dedup.h"
+//#include "buse.h"
+#include "buse_single.h"
 #include "global_opts.h"
 
 
@@ -39,18 +39,13 @@ static void usage()
     fprintf(stderr, "Options:\n\n");
     fprintf(stderr, BOLD"    -h, --help\n" NONE "\tdisplay the help infomation\n\n");
     fprintf(stderr, BOLD"    -i, --init\n" NONE "\tspecify the nbd device and init\n\n");
-    fprintf(stderr, BOLD"    -a, --hash-file\n" NONE "\tspecify the hash file\n\n");
-    fprintf(stderr, BOLD"    -p, --physical-device\n" NONE "\tspecify the physical device or file\n\n");
-    fprintf(stderr, BOLD"    -s, --space\n" NONE "\tspace mapping mode\n\n");
-    fprintf(stderr, BOLD"    -b, --btree\n" NONE "\tb+tree mapping mode and specify b+tree db file\n\n");
+    fprintf(stderr, BOLD"    -n, --init\n" NONE "\tnormal run mode\n\n");
+//    fprintf(stderr, BOLD"    -a, --hash-file\n" NONE "\tspecify the hash file\n\n");
+//    fprintf(stderr, BOLD"    -p, --physical-device\n" NONE "\tspecify the physical device or file\n\n");
+//    fprintf(stderr, BOLD"    -s, --space\n" NONE "\tspace mapping mode\n\n");
+//    fprintf(stderr, BOLD"    -b, --btree\n" NONE "\tb+tree mapping mode and specify b+tree db file\n\n");
 }
 
-static void print_debug_info()
-{
-    fprintf(stderr, "SIZE is %lluM\n", SIZE/1024/1024);
-    fprintf(stderr, "HASH_INDEX_SIZE is %llu\n", HASH_INDEX_SIZE);
-    fprintf(stderr, "HASH_LOG_SIZE is %llu\n", HASH_LOG_SIZE);
-}
 
 
 
@@ -129,14 +124,15 @@ void open_file(void)
 
 void parse_command_line(int argc, char *argv[])
 {
+    // TODO: Can't specify NBD device for now!!!
     /* command line args */
     const char *opt_string = "i:n:p:h:s:b";
     const struct option long_opts[] = {
             {"init", required_argument, NULL, 'i'},
             {"nbd", required_argument, NULL, 'n'},
             {"help", no_argument, NULL, 'h'},
-            {"space", no_argument, NULL, 's'},
-            {"btree", no_argument, NULL, 'b'},
+//            {"space", no_argument, NULL, 's'},
+//            {"btree", no_argument, NULL, 'b'},
             {NULL, 0, NULL, NULL},
     };
 
@@ -152,12 +148,12 @@ void parse_command_line(int argc, char *argv[])
             case 'n':   // nbd device
                 gArgs()->run_mode = RUN_MODE;
                 break;
-            case 'b':   // b+tree mode
-                gArgs()->MAP = BPTREE_MODE;
-                break;
-            case 's':
-                gArgs()->MAP = SPACE_MODE;
-                break;
+//            case 'b':   // b+tree mode
+//                gArgs()->MAP = BPTREE_MODE;
+//                break;
+//            case 's':
+//                gArgs()->MAP = SPACE_MODE;
+//                break;
             case 'h':   // help
             default:
                 usage();
@@ -186,21 +182,21 @@ static void print_cmd_args()
             printf("run mode: invalid\n");
             break;
     }
-
-    printf("data free list offset: %lu\n", gArgs()->data_log_free_list.offset);
-    printf("data free list size: %lu\n", gArgs()->data_log_free_list.size);
-    printf("data free list next: %lu\n", gArgs()->data_log_free_list.next);
     printf("===================================\n");
 }
 
 
-static void default_settings(void)
+static void print_debug_info()
 {
-    gArgs()->cmd_debug = false;
-    gArgs()->rabin_debug = false;
-    gArgs()->read_debug = false;
-    gArgs()->write_debug = false;
+    printf("data free list offset: %lu\n", gArgs()->data_log_free_list.offset);
+    printf("data free list size: %lu\n", gArgs()->data_log_free_list.size);
+    printf("data free list next: %lu\n", gArgs()->data_log_free_list.next);
+
+    fprintf(stderr, "SIZE is %lluM\n", SIZE/1024/1024);
+    fprintf(stderr, "HASH_INDEX_SIZE is %llu\n", HASH_INDEX_SIZE);
+    fprintf(stderr, "HASH_LOG_SIZE is %llu\n", HASH_LOG_SIZE);
 }
+
 
 
 /**
@@ -210,7 +206,6 @@ int main(int argc, char *argv[])
 {
     ssize_t err;
 
-    default_settings();
     /* First, we parse the cmd line */
     parse_command_line(argc, argv);
 
@@ -220,7 +215,7 @@ int main(int argc, char *argv[])
 
     open_file();
 
-    if (gArgs()->cmd_debug) {
+    if (CMD_DEBUG) {
         print_debug_info();
         print_cmd_args();
     }
@@ -241,7 +236,7 @@ int main(int argc, char *argv[])
         /* By convention the first entry in the hash log is a pointer to the hash
          * log free list. Likewise for the data log. */
         SEEK_TO_HASH_LOG(gArgs()->hash_table_fd, 0);
-        int hash_log_index;
+        uint64_t hash_log_index;
         err = read(gArgs()->hash_table_fd, &hash_log_index, sizeof(uint64_t));
         assert( err == sizeof(uint64_t));
 
@@ -249,14 +244,14 @@ int main(int argc, char *argv[])
         set_data_log_offset(0);
 
         /* Listen SIGINT signal */
-        signal(SIGINT, &dedup_disc);
+        signal(SIGINT, (void (*)(int))dedup_disc);
 
         struct buse_operations bop = {
-                .read = dedup_read,
-                .write = dedup_write,
-                .disc = dedup_disc,
-                .flush = dedup_flush,
-                .trim = dedup_trim,
+                .read = (readfcnt_t )dedup_read,
+                .write = (int (*)(const void *buf, u_int32_t len, u_int64_t offset, void *userdata))dedup_write,
+                .disc = (void (*)(void *userdata))dedup_disc,
+                .flush = (int (*)(void *userdata))dedup_flush,
+                .trim = (int (*)(u_int64_t from, u_int32_t len, void *userdata))dedup_trim,
                 .size = SIZE,
         };
 
