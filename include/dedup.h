@@ -72,7 +72,7 @@ enum {
 
 #define SEEK_TO_BUCKET(fd, i) \
     do { \
-        if (MAPPING == BPTREE_MODE ) \
+        if (gArgs()->MAP == BPTREE_MODE ) \
             lseek64((fd), (i)*sizeof(hash_bucket), SEEK_SET); \
         else if (g_args.MAP == SPACE_MODE) \
             lseek64((fd), SPACE_SIZE + (i)*sizeof(hash_bucket), SEEK_SET); \
@@ -80,9 +80,9 @@ enum {
 
 #define SEEK_TO_HASH_LOG(fd, i) \
     do { \
-        if (MAPPING == BPTREE_MODE ) \
+        if (gArgs()->MAP == BPTREE_MODE ) \
             lseek64((fd), HASH_INDEX_SIZE + (i) * sizeof(struct hash_log_entry), SEEK_SET); \
-        else if (MAPPING == SPACE_MODE) \
+        else if (gArgs()->MAP == SPACE_MODE) \
             lseek64((fd), SPACE_SIZE + HASH_INDEX_SIZE + (i) * sizeof(struct hash_log_entry), SEEK_SET); \
     } while (0)
 
@@ -143,10 +143,6 @@ struct g_args_t {
     zlog_category_t* log_error;
     struct bplus_tree *tree;
     struct data_log_free_list_node data_log_free_list;
-    bool cmd_debug;
-    bool rabin_debug;
-    bool read_debug;
-    bool write_debug;
 };
 
 struct last_request_t {
@@ -159,15 +155,18 @@ struct last_request_t {
 
 
 /* Forward declaration */
-static int read_one_block(void *buf, uint32_t len, uint64_t offset);
-static int write_cdc_block(void *buf, uint32_t len, uint64_t offset);
-static int dedup_write(const void *buf, uint32_t len, uint64_t offset);
-static int dedup_read(void *buf, uint32_t len, uint64_t offset);
-static int dedup_disc();
-static int dedup_flush();
-static int dedup_trim(uint64_t from, uint32_t len);
-static struct g_args_t* gArgs();
-static void set_data_log_offset(uint64_t offset);
-static void set_hash_log_offset(uint64_t index);
+int read_one_block(void *buf, uint32_t len, uint64_t offset);
+int write_cdc_block(void *buf, uint32_t len, uint64_t offset);
+int dedup_write(const void *buf, uint32_t len, uint64_t offset);
+int dedup_read(void *buf, uint32_t len, uint64_t offset);
+void dedup_disc();
+int dedup_flush();
+int dedup_trim(uint64_t from, uint32_t len);
+struct g_args_t* gArgs();
+void set_data_log_offset(uint64_t offset);
+void set_hash_log_offset(uint64_t index);
+
+
+
 
 #endif //OPEN_DEDUP_DEDUP_H

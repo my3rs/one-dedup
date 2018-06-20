@@ -10,6 +10,7 @@ add_library(buse_single buse_single.c)
 ADD_LIBRARY(bplustree STATIC bplustree.c)
 add_library(rabin STATIC rabin.c)
 add_library(dedup STATIC dedup.c)
+target_link_libraries(dedup ssl crypto rabin)
 
 
 
@@ -26,6 +27,6 @@ target_link_libraries(bplustree_test bplustree)
 
 # main
 add_executable(main main.c)
-TARGET_LINK_LIBRARIES(main buse_single crypto ssl pthread zlog bplustree rabin dedup)
+TARGET_LINK_LIBRARIES(main buse_single pthread zlog bplustree dedup)
 
 
